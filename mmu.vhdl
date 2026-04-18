@@ -20,6 +20,11 @@ entity mmu is
         d_out : out MmuToDcacheType;
         d_in  : in DcacheToMmuType;
 
+        -- Sandbox telemetry SPR interface to execute1 (dedicated wires,
+        -- not decoded from sprn). Write on cycle N -> rdata valid on N+1.
+        e_in  : in Execute1ToMmuSprType;
+        e_out : out MmuToExecute1SprType;
+
         i_out : out MmuToITLBType
         );
 end mmu;
@@ -70,6 +75,9 @@ architecture behave of mmu is
         segerror  : std_ulogic;
         perm_err  : std_ulogic;
         rc_error  : std_ulogic;
+        -- Sandbox telemetry placeholder. Will eventually be repurposed as
+        -- a Trace Array capturing bit-packed FSM state for debugging.
+        temp_trace_array : std_ulogic_vector(63 downto 0);
     end record;
 
     signal r, rin : reg_stage_t;
@@ -94,6 +102,8 @@ begin
                 r.pt3_valid <= '0';
                 r.ptcr <= (others => '0');
                 r.pid <= (others => '0');
+                -- Sandbox telemetry register reset
+                r.temp_trace_array <= (others => '0');
             else
                 if rin.valid = '1' then
                     report "MMU got tlb miss for " & to_hstring(rin.addr);
@@ -499,6 +509,57 @@ begin
         i_out.doall <= r.inval_all;
         i_out.addr <= addr;
         i_out.pte <= tlb_data;
+
+        -- =====================================================================
+        -- Sandbox telemetry SPR pipeline
+        -- ---------------------------------------------------------------------
+        -- Dedicated point-to-point path between execute1 and the MMU. No sprn
+        -- decoding happens here: e_in is treated as a pre-selected wire
+        -- interface. The intent is a deterministic one-cycle round trip so we
+        -- can validate pipeline integrity and confirm no cross-path leakage
+        -- before repurposing temp_trace_array as a real Trace Array.
+        --
+        -- Write  (clocked, via next-state v): cycle N
+        -- Read   (combinational, from r)    : cycle N+1
+        -- =====================================================================
+
+        -- Write path: update next-state register when execute1 asserts a
+        -- valid write on the sandbox channel. This is the only writer of
+        -- temp_trace_array in the current (non-instrumented) build.
+        if e_in.valid = '1' and e_in.write = '1' then
+            v.temp_trace_array := e_in.wdata;
+        end if;
+
+        -- ---------------------------------------------------------------------
+        -- FUTURE TRACE ARRAY LOGGING BLOCK
+        -- ---------------------------------------------------------------------
+        -- When temp_trace_array is promoted from a sandbox placeholder to a
+        -- real Trace Array, the following pattern will bit-pack selected
+        -- MMU FSM internals into the register every cycle (or every cycle
+        -- that a trace-enable qualifier is asserted). The layout below is a
+        -- proposed example; the final field widths/positions will be fixed
+        -- once the trace consumer is defined.
+        --
+        -- Proposed packing (LSB-first example, 64 bits total):
+        --   [ 3: 0]  r.state encoded as a 4-bit value
+        --   [ 4]     r.badtree
+        --   [ 5]     r.segerror
+        --   [ 6]     r.perm_err
+        --   [63: 7]  reserved / future trace fields
+        --
+        -- v.temp_trace_array := (others => '0');
+        -- v.temp_trace_array(3 downto 0) :=
+        --     std_ulogic_vector(to_unsigned(state_t'pos(r.state), 4));
+        -- v.temp_trace_array(4)          := r.badtree;
+        -- v.temp_trace_array(5)          := r.segerror;
+        -- v.temp_trace_array(6)          := r.perm_err;
+        -- ---------------------------------------------------------------------
+
+        -- Read path: combinational drive from the current-state register.
+        -- Because temp_trace_array is only updated through v in mmu_0, any
+        -- write issued on cycle N is visible here no earlier than cycle N+1,
+        -- giving the required one-cycle pass-through latency.
+        e_out.rdata <= r.temp_trace_array;
 
     end process;
 end;
