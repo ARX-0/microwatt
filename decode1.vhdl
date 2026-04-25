@@ -602,9 +602,9 @@ begin
 	    v.spr_info := (sel => "XXXX", others => 'X');
 	    v.ram_spr := (index => (others => 'X'), others => 'X');
 	else
-            sprn := decode_spr_num(f_in.insn);
-            v.spr_info := map_spr(sprn);
-            v.ram_spr := decode_ram_spr(sprn);
+            sprn := decode_spr_num(f_in.insn);  -- exact the 10 bit SPRs 
+            v.spr_info := map_spr(sprn);   -- check exece1's SPRs
+            v.ram_spr := decode_ram_spr(sprn);  -- check RAMs SPRs
         end if;
 
         icode := f_in.icode;
